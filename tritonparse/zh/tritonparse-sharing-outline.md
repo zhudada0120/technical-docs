@@ -1,5 +1,4 @@
-# TritonParse 使用分享 — 大纲
-
+# TritonParse 快速上手
 
 ---
 
@@ -361,7 +360,95 @@ tritonparseoss info parsed_output/trace.ndjson.gz --kernel matmul_kernel --args-
 
 ---
 
-### 2.6 步骤 3：使用 Web 界面分析
+### 2.6 diff：对比内核编译差异
+
+在解析后，可以用 `diff` 命令对比两个编译事件或两个 trace 文件的差异，快速定位 IR 变化。
+
+```bash
+tritonparseoss diff <input_file> [options]
+tritonparseoss diff <file_a> <file_b> --trace  # Trace 模式
+```
+
+| 参数 | 描述 |
+|------|------|
+| `<input_file>` | 单个 trace 文件路径（`.ndjson` 或 `.ndjson.gz`） |
+| `<file_a> <file_b>` | 两个 trace 文件路径（需配合 `--trace`） |
+
+| 选项 | 描述 | 默认值 |
+|------|------|--------|
+| `-e`, `--events <N,M>` | 要对比的事件索引，逗号分隔 | `0,1` |
+| `-k`, `--kernel <name>` | 按内核名过滤后再取事件索引 | - |
+| `-o`, `--output <path>` | 输出文件路径 | `{input}_diff.ndjson` |
+| `-i`, `--in-place` | 将 diff 结果追加到输入文件 | 关闭 |
+| `-l`, `--list` | 列出可用的编译事件并退出 | - |
+| `-q`, `--quiet` | 静默模式，仅写入文件 | 关闭 |
+| `--trace` | **Trace 模式**：自动匹配两个文件中所有同名 kernel 并逐一对比 | 关闭 |
+| `--tensor-values` | 对比 launch 事件中的张量数值（需开启 blob 或 tensor information） | 关闭 |
+| `--atol <float>` | 张量对比的绝对容差 | `1e-5` |
+| `--rtol <float>` | 张量对比的相对容差 | `1e-3` |
+| `--ai` | 对符合条件的 kernel 运行 AI 根因分析 | 关闭 |
+
+#### 两种对比模式
+
+**单事件模式** — 对比同一文件中两个具体的编译事件：
+
+```bash
+# 列出所有编译事件，确定要对比的索引
+tritonparseoss diff ./parsed_output/trace.ndjson.gz --list
+
+# 对比索引 0 和 3 的两个事件
+tritonparseoss diff ./parsed_output/trace.ndjson.gz --events 0,3
+
+# 按内核名过滤后对比
+tritonparseoss diff ./parsed_output/trace.ndjson.gz --kernel softmax_kernel --events 0,1
+
+# 输出到指定文件
+tritonparseoss diff ./parsed_output/trace.ndjson.gz --events 0,3 -o ./diff_output.ndjson.gz
+```
+
+**Trace 模式** — 自动批量对比两个文件中的全部同名内核：
+
+```bash
+# 两个 trace 文件自动匹配
+tritonparseoss diff trace_old.gz trace_new.gz --trace
+
+# 同时对比张量数值
+tritonparseoss diff trace_old.gz trace_new.gz --trace --tensor-values
+
+# 静默输出
+tritonparseoss diff trace_old.gz trace_new.gz --trace -q -o ./trace_diff.ndjson.gz
+```
+
+#### 输出解读
+
+```
+Status: significant_diff          ← 整体结论：identical / minor_diff / significant_diff
+
+Matched Kernels:                  ← 按内核名自动匹配的结果列表
+  [=] matmul_kernel: identical    ← [=] 无差异
+      (events #0 ↔ #0), 1 launches each
+  [!] softmax_kernel: different   ← [!] 有差异
+      (events #6 ↔ #6), 1 launches each
+    Highlights:                   ← 差异要点摘要
+      • src_constants: {...} → {...}      编译期常量变化
+      • src_attrs: +1 parameter           参数数量变化
+      • TTIR: +61%                        IR 体积变化
+      • New in TTIR: scf.for, arith.addi  新增 IR 指令类型
+    IR Statistics:                ← 各 IR 阶段行数变化
+      TTIR: 83 → 134 (+51, +61.4%)
+    Python Lines with IR Diff:    ← Python 源码行 → IR 行映射
+      Line 211: +12 ttir          ← 该行 Python 代码生成了更多 IR 指令
+      Line 197: +9 ttir
+
+Unmatched Kernels:               ← 无法匹配的内核（仅在一个文件中出现）
+  (none)
+```
+
+> 💡 **提示**：输出文件可在前端 [File Diff 页面](https://meta-pytorch.org/tritonparse/) 加载，使用 Monaco DiffEditor 逐行对比 IR 代码。Trace 模式尤其适合"改了内核写法后看 IR 差异"和"升级 Triton 版本后对比影响"的场景。
+
+---
+
+### 2.7 步骤 3：使用 Web 界面分析
 
 **在线界面（推荐）：**
 
@@ -404,7 +491,7 @@ tritonparseoss info parsed_output/trace.ndjson.gz --kernel matmul_kernel --args-
 
 ---
 
-### 2.7 复现器 — 生成独立内核脚本
+### 2.8 复现器 — 生成独立内核脚本
 
 TritonParse 可以自动生成独立的 Python 脚本，用于复现特定的内核执行，对于调试、共享测试用例以及隔离性能问题非常有用。
 
@@ -514,7 +601,7 @@ tritonparse 的分析器架构支持按后端扩展。未来如果有 Ascend 侧
 
 ### 场景 1：Bug 隔离 — 提取问题内核独立调试
 
-你的模型在 Ascend NPU 上跑出异常结果，怀疑某个 Triton kernel 有问题。把那个 kernel 从完整工程中提取出来，脱离原始环境单独跑，方便加调试代码、改参数。
+你的模型在NPU 上跑出异常结果，怀疑某个 Triton kernel 有问题。把那个 kernel 从完整工程中提取出来，脱离原始环境单独跑，方便加调试代码、改参数。
 
 **步骤：**
 
@@ -537,7 +624,7 @@ python repro_*.py
 
 ### 场景 2：内核比较 — 对比两次运行的编译差异
 
-你改了 Triton 版本或编译器参数，想对比同一 kernel 在新旧环境下的 IR 差异。
+换了新的环境包，昨天还能跑的算子今天跑着有问题了。
 
 **步骤：**
 
@@ -550,7 +637,7 @@ mv parsed_output/xxx__mapped.ndjson.gz trace_old.gz
 TORCHINDUCTOR_FX_GRAPH_CACHE=0 python tests/test_complex_kernels_npu.py
 mv parsed_output/xxx__mapped.ndjson.gz trace_new.gz
 
-# 3. CLI 快速扫描差异
+# 3. CLI 扫描差异（详见 2.6 节 diff 命令）
 tritonparseoss diff trace_old.gz trace_new.gz --trace
 
 # 4. 浏览器 File Diff 逐行对比 IR，定位具体变化的阶段和行
